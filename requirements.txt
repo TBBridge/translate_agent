@@ -1,0 +1,17 @@
+langchain
+langchain-core
+langchain-openai
+langchain-ollama
+langchain-anthropic
+langchain-google-genai
+google-generativeai
+ollama
+gitpython
+translators
+openai
+dotenv
+pydantic
+requests
+PyGithub
+streamlit
+notion-client

@@ -1,0 +1,30 @@
+# Secrets / environment
+.env
+.env.*
+
+# Python caches
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+
+# Logs
+*.log
+
+# IDE / editor
+.idea/
+.vscode/
+.trae/
+.tasks/
+
+# Runtime inputs/outputs (generated at run time)
+downloaded_files/
+downloaded_zips/
+temp_repo/
+translated_results/
+output/
+translation_state/
+
+# OS
+.DS_Store
+Thumbs.db
