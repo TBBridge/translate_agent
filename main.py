@@ -47,7 +47,10 @@ class TranslationAgent:
                  dictionary_file: str = "./dictionary.txt", config_file: str = "./config.ini",
                  output_naming: str = None, push_option: str = None):
         # Read parameters from config file first
-        self.config = configparser.ConfigParser()
+        # inline_comment_prefixes strips trailing "# ..." comments from values so
+        # that e.g. an API key written as "key  # note" yields just "key" rather
+        # than the key plus a non-ASCII comment that breaks HTTP headers.
+        self.config = configparser.ConfigParser(inline_comment_prefixes=('#',))
         # Read config file in UTF-8 for compatibility
         self.config.read(config_file, encoding='utf-8')
         # Read model-related env vars only from .env (do not use OS env vars)
@@ -103,6 +106,8 @@ class TranslationAgent:
         self.claude_api_key = self._env.get("CLAUDE_API_KEY") or (self.config.get("api", "claude_api_key", fallback=None) if self.config.has_section("api") else None)
         # Google Gemini API key (used for English review)
         self.google_api_key = self._env.get("GOOGLE_API_KEY") or (self.config.get("api", "google_api_key", fallback=None) if self.config.has_section("api") else None)
+        # Agnes API key (OpenAI-compatible endpoint)
+        self.agnes_api_key = self._env.get("AGNES_API_KEY") or (self.config.get("api", "agnes_api_key", fallback=None) if self.config.has_section("api") else None)
         self.azure_openai_endpoint = self._env.get("AZURE_OPENAI_ENDPOINT") or (self.config.get("api", "azure_openai_endpoint", fallback=None) if self.config.has_section("api") else None)
         self.azure_openai_api_key = self._env.get("AZURE_OPENAI_API_KEY") or (self.config.get("api", "azure_openai_api_key", fallback=None) if self.config.has_section("api") else None)
 
@@ -652,6 +657,8 @@ class TranslationAgent:
             return bool(self.google_api_key)
         if provider == "claude":
             return bool(self.claude_api_key)
+        if provider == "agnes":
+            return bool(self.agnes_api_key)
         # openai or unconfigured -> legacy path relies on OpenAI/Azure
         return bool(self.openai_api_key) or bool(self.azure_openai_endpoint and self.azure_openai_api_key)
 
@@ -726,6 +733,13 @@ class TranslationAgent:
                 client = OpenAI(api_key=self.google_api_key, base_url="https://generativelanguage.googleapis.com/v1beta/openai/")
                 print("Using Gemini")
                 return client, (model_name or "gemini-2.5-pro")
+
+            if provider == "agnes":
+                if not self.agnes_api_key:
+                    raise ValueError("Agnes API key not set")
+                client = OpenAI(api_key=self.agnes_api_key, base_url="https://apihub.agnes-ai.com/v1")
+                print("Using Agnes")
+                return client, (model_name or "agnes-2.0-flash")
 
             # provider == "claude" or unknown/empty -> legacy hard-coded behavior
             return self._get_llm_client_legacy(task_type)
@@ -819,9 +833,33 @@ class TranslationAgent:
         Returns:
             List of matched files
         """
-        from pathlib import Path
         import fnmatch
-        
+
+        def _glob_to_regex(pat: str):
+            """Convert a glob pattern to a compiled regex.
+
+            Unlike pathlib.Path.match, '**' matches zero or more directory
+            segments, so '**/*.md' matches both top-level and nested files.
+            """
+            i, n, out = 0, len(pat), ''
+            while i < n:
+                if pat[i:i + 3] == '**/':
+                    out += '(?:.*/)?'  # zero or more directories
+                    i += 3
+                elif pat[i:i + 2] == '**':
+                    out += '.*'
+                    i += 2
+                elif pat[i] == '*':
+                    out += '[^/]*'
+                    i += 1
+                elif pat[i] == '?':
+                    out += '[^/]'
+                    i += 1
+                else:
+                    out += re.escape(pat[i])
+                    i += 1
+            return re.compile('^' + out + '$')
+
         matched = []
         patterns = [p.strip() for p in pattern.split(',')]
         
@@ -844,11 +882,16 @@ class TranslationAgent:
                     match_path = rel_path
             else:
                 match_path = file_path
-            
+
+            # Normalize separators to '/' so patterns match on Windows too
+            match_path = match_path.replace(os.sep, '/')
+
             for pat in patterns:
-                # Handle ** patterns using pathlib.Path.match
+                pat = pat.replace(os.sep, '/')
+                # Handle ** patterns (zero or more directories); fall back to
+                # fnmatch for simple patterns
                 if '**' in pat:
-                    if Path(match_path).match(pat):
+                    if _glob_to_regex(pat).match(match_path):
                         matched.append(file_item)
                         break
                 else:
@@ -3256,16 +3299,22 @@ if __name__ == "__main__":
     
     if result["success"]:
         print("翻译任务完成！")
-        for item in result["results"]:
-            print(f"- 翻译文件: {item['translated_file']}")
-            if item['review_result']['status'] == 'success':
-                print(f"  审核文件: {item['review_result']['review_file']}")
-                if 'improved_file' in item['review_result']:
-                    print(f"  改进文件: {item['review_result']['improved_file']}")
-            elif item['review_result']['status'] == 'basic_improved':
-                print(f"  基础改进文件: {item['review_result']['improved_file']}")
-                print(f"  状态: {item['review_result']['reason']}")
-            else:
-                print(f"  审核状态: {item['review_result']['status']}")
+        # results is keyed by target language: {lang: [items...], lang+"_push_result": {...}}
+        for lang, items in result["results"].items():
+            if lang.endswith("_push_result"):
+                print(f"\n[{lang}] {items.get('message', '')} (pushed: {items.get('pushed_files', 0)})")
+                continue
+            print(f"\n=== {lang} ===")
+            for item in items:
+                print(f"- 翻译文件: {item['translated_file']}")
+                if item['review_result']['status'] == 'success':
+                    print(f"  审核文件: {item['review_result']['review_file']}")
+                    if 'improved_file' in item['review_result']:
+                        print(f"  改进文件: {item['review_result']['improved_file']}")
+                elif item['review_result']['status'] == 'basic_improved':
+                    print(f"  基础改进文件: {item['review_result']['improved_file']}")
+                    print(f"  状态: {item['review_result']['reason']}")
+                else:
+                    print(f"  审核状态: {item['review_result']['status']}")
     else:
         print(f"翻译任务失败: {result['message']}")

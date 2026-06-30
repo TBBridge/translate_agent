@@ -35,7 +35,7 @@ def create_langchain_llm(provider: str, model_name: str, api_keys: dict) -> Opti
     provider = (provider or "openai").lower()
     model_name = model_name or "gpt-3.5-turbo"
 
-    if provider in ["openai", "deepseek", "dashscope"]:
+    if provider in ["openai", "deepseek", "dashscope", "agnes"]:
         if ChatOpenAI is None:
             return None
         base_url = None
@@ -48,6 +48,9 @@ def create_langchain_llm(provider: str, model_name: str, api_keys: dict) -> Opti
         elif provider == "dashscope":
             api_key = api_keys.get("dashscope") or os.environ.get("DASHSCOPE_API_KEY")
             base_url = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+        elif provider == "agnes":
+            api_key = api_keys.get("agnes") or os.environ.get("AGNES_API_KEY")
+            base_url = "https://apihub.agnes-ai.com/v1"
         if not api_key:
             return None
         # ChatOpenAI 在新版本中支持 base_url
@@ -99,5 +102,11 @@ def create_native_client(provider: str, api_keys: dict):
         if not api_key:
             return None, None
         client = OpenAI(api_key=api_key, base_url="https://api.deepseek.com/v1")
+        return client, None
+    if provider == "agnes":
+        api_key = api_keys.get("agnes") or os.environ.get("AGNES_API_KEY")
+        if not api_key:
+            return None, None
+        client = OpenAI(api_key=api_key, base_url="https://apihub.agnes-ai.com/v1")
         return client, None
     return None, None
